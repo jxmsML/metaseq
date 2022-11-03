@@ -493,7 +493,12 @@ class GeneratorInterface:
         task = tasks.setup_task(self.cfg.task)
 
         def _build_model(cfg, task):
-            model = task.build_model(cfg.model).cuda()
+            try:            
+                model = task.build_model(cfg.model).cuda()
+            except AssertionError as e:
+                logger.info(f"GeneratorInterface reseting tensor_parallel_init_model_on_gpu=True: {e}")
+                cfg.model.tensor_parallel_init_model_on_gpu = True
+                model = task.build_model(cfg.model).cuda()
             model.make_generation_fast_()
             return fsdp_wrap(model)
 
@@ -559,6 +564,15 @@ class GeneratorInterface:
         stop: Optional[List[int]] = None,
         seed: Optional[int] = None,
         use_cuda: bool = True,
+        omega_bound: float = 0.3,
+        lambda_decay: float = -1,
+        alpha_presence: float = 0.0,
+        alpha_frequency: float = 0.0,
+        alpha_presence_src: float = 0.0,
+        alpha_frequency_src: float = 0.0,
+        alpha_src_penalty_end_idx: int = -1,
+        infer_mixing_weight: float = -1,
+        infer_gamma: float = -1,
     ):
         """
         Generate from sequences.
@@ -584,6 +598,7 @@ class GeneratorInterface:
         total_generation_time = 0
 
         # Initialize generator
+        logger.info(f"Hi, I am initializing the generator with infer_mixing_weight = {infer_mixing_weight}, infer_gamma = {infer_gamma}")
         if not best_of:
             best_of = n
         assert best_of >= n
@@ -614,6 +629,7 @@ class GeneratorInterface:
             max_positions=None,
             ignore_invalid_inputs=False,
         ).next_epoch_itr(shuffle=False)
+        logger.info(f"Hello again. I have {len(batches)} batches")
         for batch in batches:
             src_tokens = batch["net_input"]["src_tokens"]
             src_lengths = batch["net_input"]["src_lengths"]
@@ -635,10 +651,25 @@ class GeneratorInterface:
 
             logger.info(f"Preparing generator with settings {self.cfg.generation}")
             need_logprobs = True if logprobs > 0 else False
+            extra_args = {
+                "stop": stop,
+                "need_logprobs": need_logprobs,
+                "omega_bound": omega_bound,
+                "lambda_decay": lambda_decay,
+                "alpha_presence": alpha_presence,
+                "alpha_frequency": alpha_frequency,
+                "alpha_presence_src": alpha_presence_src,
+                "alpha_frequency_src": alpha_frequency_src,
+                "alpha_src_penalty_end_idx": alpha_src_penalty_end_idx,
+                "infer_mixing_weight": infer_mixing_weight,
+                "infer_gamma": infer_gamma
+            }
+            logger.info(f"Sending additional args: {extra_args}")
+            logger.info(f"this task = : {self.task}")
             generator = self.task.build_generator(
                 self.models,
                 self.cfg.generation,
-                extra_gen_cls_kwargs={"stop": stop, "need_logprobs": need_logprobs},
+                extra_gen_cls_kwargs=extra_args,
             )
 
             # okay actually generate
@@ -733,6 +764,7 @@ class GeneratorInterface:
                 time.time() - start_time, total_generation_time
             )
         )
+        torch.cuda.synchronize()
         return retval
 
     def _filter_special(

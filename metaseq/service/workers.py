@@ -48,6 +48,10 @@ class WorkItem:
         cost = enc_len + int(
             math.ceil((enc_len / 10) ** 2)
         )  # account for the cost of both linear and attention layers
+        seq_len = len(encoded_prompt) + generation_args.get('max_tokens', 0)
+        cost = seq_len + int(
+            math.ceil((seq_len / 10) ** 2)
+        )  # account for the cost of both linear and attention layers
         batch_queue.put(WorkItem(cost, 0, ret_queue, request_object))
         _, result = ret_queue.get()
         return result

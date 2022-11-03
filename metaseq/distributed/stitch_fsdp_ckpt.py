@@ -17,9 +17,29 @@ from tqdm import tqdm
 
 from metaseq.distributed.fully_sharded_data_parallel import FSDP as FSDP
 from metaseq.file_io import load_and_pop_last_optimizer_state
+import psutil
+import sys
 
 logger = logging.getLogger(__name__)
 
+
+def sizeof_fmt(num, suffix='B'):
+    ''' by Fred Cirera,  https://stackoverflow.com/a/1094933/1870254, modified'''
+    for unit in ['','Ki','Mi','Gi','Ti','Pi','Ei','Zi']:
+        if abs(num) < 1024.0:
+            return "%3.1f %s%s" % (num, unit, suffix)
+        num /= 1024.0
+    return "%.1f %s%s" % (num, 'Yi', suffix)
+
+
+def _log_cpu_ram(step_str, variable_items=None):
+    print(f'------ {step_str} -------')
+    print(f'RAM memory : {psutil.virtual_memory()[2]}')
+    # Getting usage of virtual_memory in GB ( 4th field)
+    print(f'RAM Used (GB): {psutil.virtual_memory()[3]/1000000000}')
+    if variable_items:
+        for name, size in sorted(((name, sys.getsizeof(value)) for name, value in variable_items),key= lambda x: -x[1])[:5]:
+            print("{:>30}: {:>8}".format(name, sizeof_fmt(size)))
 
 def _get_shard_number(x) -> int:
     match = re.search(r"shard(\d+).pt", x)
@@ -36,6 +56,7 @@ def consolidate_fsdp_shards(
     new_arch_name=None,
     no_stitch_megatron=False,
     megatron_part=None,
+    combine_qkv_key_if_singleton=False,
 ) -> str:
     if pth_prefix.endswith(".pt"):
         pth_prefix = pth_prefix[:-3]
@@ -70,7 +91,10 @@ def consolidate_fsdp_shards(
             ckpt = load_and_pop_last_optimizer_state(p)
             weights.append(ckpt["model"])
             metadata.append(ckpt["shard_metadata"])
+    _log_cpu_ram('DONE loading all_ckpt_files', locals().items())
     assert weights, f"all files were considered experts: {all_ckpt_files}"
+    for name, size in sorted(((name, sys.getsizeof(value)) for name, value in locals().items()),key= lambda x: -x[1])[:5]:
+        print("{:>30}: {:>8}".format(name, sizeof_fmt(size)))
     do_consolidate = True
     if "decoder.embed_tokens.weight" in weights[0].keys():
         shape = weights[0]["decoder.embed_tokens.weight"].shape
@@ -91,6 +115,7 @@ def consolidate_fsdp_shards(
                 weights,
                 parts=num_parts,
                 no_stitch_megatron=no_stitch_megatron,
+                combine_qkv_key_if_singleton=combine_qkv_key_if_singleton,
             )
         else:
             logger.info("FSDP.consolidate_shard_weights")
@@ -168,7 +193,7 @@ def consolidate_fsdp_shards(
 
 
 def consolidate_model_parallel(
-    metadata, names, strict, weights, parts=2, no_stitch_megatron=False
+    metadata, names, strict, weights, parts=2, no_stitch_megatron=False, combine_qkv_key_if_singleton=False,
 ):
     model_parts = defaultdict(list)
     metadata_parts = defaultdict(list)
@@ -178,6 +203,7 @@ def consolidate_model_parallel(
                 model_parts[p].append(weights[i])
                 metadata_parts[p].append(metadata[i])
     all_parts_consolidated = defaultdict(list)
+    _log_cpu_ram('all_parts_consolidated')
     for k, v in model_parts.items():
         part_weights = FSDP.consolidate_shard_weights(
             shard_weights=v, shard_metadata=metadata_parts[k], strict=strict
@@ -186,7 +212,11 @@ def consolidate_model_parallel(
     if no_stitch_megatron:
         return all_parts_consolidated
     # glue to be a single megatron mdoel part
-    model = reshard_megatron_parts(all_parts_consolidated, new_model_part_count=1)[0]
+    # TODO new_model_part_count configurable !
+    model = reshard_megatron_parts(all_parts_consolidated, new_model_part_count=1, combine_qkv_key_if_singleton=combine_qkv_key_if_singleton)
+    _log_cpu_ram('reshard_megatron_parts')
+    if len(model) == 1:
+        model = model[0]
     return model
 
 
@@ -233,7 +263,7 @@ def get_n_layers(glued_model):
             return n_layers
 
 
-def reshard_megatron_parts(model_parts, new_model_part_count=1):
+def reshard_megatron_parts(model_parts, new_model_part_count=1, combine_qkv_key_if_singleton=False):
     """
     Reshard to different number of model parts.
     When new_model_part_count=1 return glued model
@@ -284,7 +314,8 @@ def reshard_megatron_parts(model_parts, new_model_part_count=1):
                 )
 
             # Handle the special case when new_model_part_count = 1 (converting to a singleton checkpoint)
-            if new_model_part_count == 1:
+            if new_model_part_count == 1 and (not combine_qkv_key_if_singleton):
+                logger.info('Overwite QKV with Q, K, V')
                 new_model_parts[0][key.replace("qkv", "k")] = resharded_ks[0]
                 new_model_parts[0][key.replace("qkv", "v")] = resharded_vs[0]
                 new_model_parts[0][key.replace("qkv", "q")] = resharded_qs[0]
@@ -333,6 +364,7 @@ def reshard_megatron_parts(model_parts, new_model_part_count=1):
         else:
             assert_all_close(key)
             _copy_key_to_all_parts(key)
+        _log_cpu_ram(f'reshard_megatron_parts {key}')
 
     for new_model_part in new_model_parts:
         assert len(new_model_part.keys()) >= len(model_parts[0].keys())

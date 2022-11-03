@@ -60,6 +60,7 @@ def _save_shards_to_disk(
         enumerate(local_state_dicts),
         desc=f"Saving to {save_dir}/reshard-{middle}-shard[i].pt",
     ):
+        print(f'target_ddp_size = {target_ddp_size}')        
         if target_ddp_size == 1:
             save_path = f"{save_dir}/reshard-{middle}.pt"
         else:
@@ -80,7 +81,8 @@ def reshard_mp(
     target_ddp_size=512,
     no_pad=False,
     drop_optimizer_state=False,
-):
+):  
+    print(f'reshard_mp target_ddp_size = {target_ddp_size}')
     middle = f"model_part-{part}"
     do_pad = not no_pad
     if not Path(f"{save_prefix}-{middle}-shard0.pt").exists():
@@ -92,6 +94,7 @@ def reshard_mp(
         f"Loading {len(paths_to_load)} paths for MP part{part}. Will shard into {target_ddp_size} files."
     )
     state = _merge_flat_fsdp_shards([torch_load_cpu(f) for f in paths_to_load])
+    print(f'DONE _merge_flat_fsdp_shards for part {part}')
     model_state = state.pop("model")
 
     dummy_model_state = {}  # for decoder.version and other useless keys
@@ -120,7 +123,7 @@ def reshard_mp(
 
     if OPT_KEY not in state:
         _save_shards_to_disk(
-            local_state_dicts, dummy_model_state, state, save_dir, middle
+            local_state_dicts, dummy_model_state, state, save_dir, middle, target_ddp_size=target_ddp_size,
         )
         return
 

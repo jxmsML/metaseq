@@ -152,7 +152,8 @@ def set_env(args, env, dry_run):
 def gen_train_command(args, env, config, oss_destination, save_dir, save_dir_key):
     # generate train command
     train_cmd = [args.python, os.path.join(oss_destination, args.script)]
-    train_cmd.extend(["--distributed-world-size", str(args.num_nodes * args.num_gpus)])
+    train_cmd = ["bash", "/private/home/jingxu23/bin/coredump.sh", args.python, os.path.join(oss_destination, args.script)]
+    # train_cmd.extend(["--distributed-world-size", str(args.num_nodes * args.num_gpus)])
     if args.num_nodes > 1 or (args.num_gpus > 1 and not args.local):
         train_cmd.extend(
             [

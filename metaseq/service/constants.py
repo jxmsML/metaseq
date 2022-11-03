@@ -15,7 +15,8 @@ MAX_BEAM = 16
 
 try:
     # internal logic denoting where checkpoints are in meta infrastructure
-    from metaseq_internal.constants import CHECKPOINT_FOLDER
+    # from metaseq_internal.constants import CHECKPOINT_FOLDER
+    from metaseq_internal.projects.blenderbot3x.constants import CHECKPOINT_FOLDER
 except ImportError:
     # CHECKPOINT_FOLDER should point to a shared drive (e.g. NFS) where the
     # checkpoints from S3 are stored. As an example:
